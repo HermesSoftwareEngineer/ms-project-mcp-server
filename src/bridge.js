@@ -1,8 +1,16 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "bridge.ps1");
+// Cópia congelada da ponte por processo: editar bridge.ps1 não afeta servidores já em execução
+// (evita o descompasso servidor antigo + ponte nova).
+const SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), "bridge.ps1");
+const SCRIPT = path.join(os.tmpdir(), `msproject-mcp-bridge-${process.pid}.ps1`);
+fs.copyFileSync(SOURCE, SCRIPT);
+process.on("exit", () => { try { fs.unlinkSync(SCRIPT); } catch {} });
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
 const TIMEOUT_MS = Number(process.env.MSPROJECT_TIMEOUT_MS ?? 180000);
 
 let queue = Promise.resolve();

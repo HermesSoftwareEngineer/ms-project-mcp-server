@@ -51,6 +51,7 @@ function Read-Fields($o, $map, $fields) {
     $r = [ordered]@{}
     foreach ($f in $fields) {
         if ($map.ContainsKey($f)) { $m = $map[$f]; $r[$f] = Conv (G $o $m[0]) $m[1] }
+        else { try { $r[$f] = Describe-Value (G $o $f) } catch { $r[$f] = $null } }   # qualquer propriedade COM (Text1, Flag1, ...)
     }
     return $r
 }
@@ -202,6 +203,7 @@ function Apply-TaskProps($proj, $t, $a) {
     if ($null -ne $a.deadline) { S $t 'Deadline' ([datetime]$a.deadline) }
     if ($null -ne $a.priority) { S $t 'Priority' ([int]$a.priority) }
     if ($null -ne $a.resources) { Apply-Resources $proj $t $a.resources }
+    Apply-Props $t $a.props
 }
 
 function Apply-ResProps($r, $a) {
@@ -211,6 +213,118 @@ function Apply-ResProps($r, $a) {
     if ($null -ne $a.email) { S $r 'EMailAddress' ([string]$a.email) }
     if ($null -ne $a.initials) { S $r 'Initials' ([string]$a.initials) }
     if ($null -ne $a.group) { S $r 'Group' ([string]$a.group) }
+    Apply-Props $r $a.props
+}
+
+# ---------- acesso genérico ao modelo de objetos ----------
+$MS = [Type]::Missing
+
+function Coerce($v) {
+    if ($v -is [string] -and $v -match '^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$') { return [datetime]$v }
+    return $v
+}
+
+function Apply-Props($obj, $props) {
+    if ($null -eq $props) { return }
+    foreach ($p in $props.PSObject.Properties) { S $obj $p.Name (Coerce $p.Value) }
+}
+
+function Describe-Value($v) {
+    if ($null -eq $v) { return $null }
+    if ($v -is [datetime]) { return $v.ToString('s') }
+    if ($v -is [string] -or $v -is [ValueType]) { return $v }
+    $d = [ordered]@{ type = 'com' }
+    try { $d['name'] = G $v 'Name' } catch {}
+    try { $d['count'] = G $v 'Count' } catch {}
+    return $d
+}
+
+function Invoke-Named($obj, [string]$method, $named) {
+    $names = @(); $vals = @()
+    foreach ($p in $named.PSObject.Properties) { $names += $p.Name; $vals += (Coerce $p.Value) }
+    $r = $obj.GetType().InvokeMember($method, [Reflection.BindingFlags]::InvokeMethod, $null, $obj, $vals, $null, $null, $names)
+    return ,$r
+}
+
+function Do-Apply($app, $o) {
+    Cur-Proj $app | Out-Null
+    $name = [string]$o.name
+    switch ("$($o.kind)") {
+        'view' { M $app 'ViewApply' @($name) | Out-Null }
+        'table' { M $app 'TableApply' @($name) | Out-Null }
+        'filter' { M $app 'FilterApply' @($name) | Out-Null }
+        'group' { M $app 'GroupApply' @($name) | Out-Null }
+        default { throw "apply: 'kind' deve ser view | table | filter | group" }
+    }
+    return @{ applied = "$($o.kind)"; name = $name }
+}
+
+function Do-RenameField($app, $o) {
+    Cur-Proj $app | Out-Null
+    $type = 0; if ("$($o.entity)" -eq 'resource') { $type = 1 }   # pjTask=0, pjResource=1
+    $const = M $app 'FieldNameToFieldConstant' @([string]$o.field, $type)
+    M $app 'CustomFieldRename' @($const, [string]$o.name) | Out-Null
+    return @{ field = [string]$o.field; renamedTo = [string]$o.name }
+}
+
+function Rgb($hex) {
+    if ($null -eq $hex -or "$hex" -eq '') { return $MS }
+    if ("$hex" -notmatch '^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$') { throw "Cor inválida '$hex' (use #RRGGBB)." }
+    return [int]([Convert]::ToInt32($Matches[1], 16) + 256 * [Convert]::ToInt32($Matches[2], 16) + 65536 * [Convert]::ToInt32($Matches[3], 16))
+}
+function Opt($v) { if ($null -eq $v) { return $MS } else { return $v } }
+
+function Do-Format($app, $o) {
+    $proj = Cur-Proj $app
+    $entity = 'task'; if ($o.entity) { $entity = "$($o.entity)" }
+    $f = $o.font
+    $reset = ($o.reset -eq $true)
+    $fa = @(
+        (Opt $f.name), (Opt $f.size), (Opt $f.bold), (Opt $f.italic), (Opt $f.underline),
+        (Rgb $f.color), $reset, (Rgb $o.fill), (Opt $o.pattern), (Opt $f.strikethrough)
+    )
+    $rows = @()
+    if ($entity -eq 'resource') {
+        if ($o.uids) { foreach ($u in @($o.uids)) { $rows += [int](G (Find-Res $proj $u $false) 'ID') } }
+        else { foreach ($r in (Items (G $proj 'Resources'))) { if ($null -ne $r) { $rows += [int](G $r 'ID') } } }
+        $viewNames = @($o.view, 'Planilha de Recursos', 'Resource Sheet')
+    } else {
+        if ($o.uids) { foreach ($u in @($o.uids)) { $rows += [int](G (Get-Task $proj $u) 'ID') } }
+        else { foreach ($t in (Items (G $proj 'Tasks'))) { if ($null -ne $t) { $rows += [int](G $t 'ID') } } }
+        $viewNames = @($o.view, 'Planilha de Tarefas', 'Task Sheet', 'Gráfico de Gantt', 'Gantt Chart')
+    }
+    $sel = { param($row)
+        if ($o.field) {
+            if ($entity -eq 'resource') { M $app 'SelectResourceField' @($row, [string]$o.field) | Out-Null }
+            else { M $app 'SelectTaskField' @($row, [string]$o.field) | Out-Null }
+        } else { M $app 'SelectRow' @($row, $false) | Out-Null }
+    }
+    $count = 0; $applied = $false
+    foreach ($row in $rows) {
+        try { & $sel $row } catch {
+            if ($applied) { throw }
+            foreach ($vn in $viewNames) { if ($vn) { try { M $app 'ViewApply' @([string]$vn) | Out-Null; & $sel $row; break } catch {} } }
+            & $sel $row
+        }
+        $applied = $true
+        M $app 'Font32Ex' $fa | Out-Null
+        $count++
+    }
+    return @{ formatted = $count; entity = $entity }
+}
+
+function Do-Export($app, $o) {
+    $proj = Cur-Proj $app
+    if (-not $o.path) { throw "export/save com formato exige 'path'." }
+    $fid = "$($o.formatId)"
+    if ($fid -match '(?i)xls|csv|txt' -and -not $o.map) {
+        throw "Exportar para $fid exige 'map' (nome de um mapa de exportação existente); sem ele o Project abre um assistente e trava."
+    }
+    $named = [ordered]@{ Name = [string]$o.path }
+    if ($fid) { $named['FormatID'] = $fid }
+    if ($o.map) { $named['Map'] = [string]$o.map }
+    Invoke-Named $app 'FileSaveAs' ([pscustomobject]$named) | Out-Null
+    return @{ exported = [string]$o.path; formatId = $fid }
 }
 
 # ---------- operações do lote ----------
@@ -235,13 +349,15 @@ function Do-BatchOp($app, $o, $op) {
         }
         'save' {
             Cur-Proj $app | Out-Null
+            if ($o.formatId) { return Do-Export $app $o }
             if ($o.path) { M $app 'FileSaveAs' @([string]$o.path) | Out-Null } else { M $app 'FileSave' | Out-Null }
             return @{ saved = G (G $app 'ActiveProject') 'FullName' }
         }
         'baseline' { Cur-Proj $app | Out-Null; M $app 'BaselineSave' @($true) | Out-Null; return @{ baseline = 'saved' } }
         'add_task' {
             $proj = Cur-Proj $app
-            $t = M (G $proj 'Tasks') 'Add' @([string]$o.name)
+            if ($null -ne $o.before) { $t = M (G $proj 'Tasks') 'Add' @([string]$o.name, [int](G (Get-Task $proj $o.before) 'ID')) }
+            else { $t = M (G $proj 'Tasks') 'Add' @([string]$o.name) }
             $uid = [int](G $t 'UniqueID')
             if ($o.as) { $script:Alias[[string]$o.as] = $uid }
             $script:Touched["$uid"] = $true
@@ -289,6 +405,62 @@ function Do-BatchOp($app, $o, $op) {
             $script:Touched["$(G $t 'UniqueID')"] = $true
             return @{ task = G $t 'Name'; resource = "$($o.resource)"; units = $u }
         }
+        'export' { return Do-Export $app $o }
+        'apply' { return Do-Apply $app $o }
+        'rename_field' { return Do-RenameField $app $o }
+        'format' { return Do-Format $app $o }
+        'set' {
+            $on = "$($o.on)"
+            if ($on -eq 'task') { $x = Get-Task (Cur-Proj $app) $o.uid; $script:Touched["$(G $x 'UniqueID')"] = $true }
+            elseif ($on -eq 'resource') { $x = Find-Res (Cur-Proj $app) $o.resource $false }
+            elseif ($on -eq 'project') { $x = Cur-Proj $app }
+            else { throw "set: 'on' deve ser task | resource | project" }
+            Apply-Props $x $o.props
+            return @{ set = $on; props = @($o.props.PSObject.Properties.Name) }
+        }
+        'delete_resource' {
+            $proj = Cur-Proj $app
+            $r = Find-Res $proj $o.resource $false
+            $name = G $r 'Name'; M $r 'Delete' | Out-Null; $script:ResCache = $null
+            return @{ deleted = $name }
+        }
+        'update_assignment' {
+            $proj = Cur-Proj $app
+            $t = Get-Task $proj $o.task
+            $rn = G (Find-Res $proj $o.resource $false) 'Name'
+            foreach ($asg in (Items (G $t 'Assignments'))) {
+                if ((G $asg 'ResourceName') -eq $rn) {
+                    if ($null -ne $o.units) { S $asg 'Units' ([double]$o.units) }
+                    Apply-Props $asg $o.props
+                    $script:Touched["$(G $t 'UniqueID')"] = $true
+                    return @{ task = G $t 'Name'; resource = $rn }
+                }
+            }
+            throw "Atribuição de '$rn' na tarefa não encontrada."
+        }
+        'delete_assignment' {
+            $proj = Cur-Proj $app
+            $t = Get-Task $proj $o.task
+            $rn = G (Find-Res $proj $o.resource $false) 'Name'
+            foreach ($asg in (Items (G $t 'Assignments'))) {
+                if ((G $asg 'ResourceName') -eq $rn) {
+                    M $asg 'Delete' | Out-Null
+                    $script:Touched["$(G $t 'UniqueID')"] = $true
+                    return @{ task = G $t 'Name'; unassigned = $rn }
+                }
+            }
+            throw "Atribuição de '$rn' na tarefa não encontrada."
+        }
+        'close' {
+            if ($null -eq $o.save) { throw "close exige 'save': true (salvar) ou false (descartar alterações). Nunca é implícito." }
+            $proj = Cur-Proj $app
+            $name = G $proj 'Name'
+            M $proj 'Activate' | Out-Null
+            $mode = 0; if ($o.save -eq $true) { $mode = 1 }
+            M $app 'FileClose' @($mode) | Out-Null
+            $script:Proj = $null; $script:ResCache = $null; $script:ProjName = $null
+            return @{ closed = $name; saved = ($o.save -eq $true) }
+        }
         default { throw "Operação desconhecida: '$op'" }
     }
 }
@@ -303,6 +475,10 @@ function Run-Batch($a) {
     $results = New-Object System.Collections.ArrayList
     $stop = -not ($a.continueOnError -eq $true)
     try { S $app 'ScreenUpdating' $false } catch {}
+    $undo = $false
+    $structural = $false
+    foreach ($o in $ops) { if ($o.op -in @('new', 'open', 'close', 'save', 'export', 'launch')) { $structural = $true } }
+    if (-not $structural) { try { M $app 'OpenUndoTransaction' @('Claude MCP (lote)') | Out-Null; $undo = $true } catch {} }   # Ctrl+Z desfaz o lote inteiro
     try {
         for ($i = 0; $i -lt $ops.Count; $i++) {
             $o = $ops[$i]
@@ -322,6 +498,7 @@ function Run-Batch($a) {
             }
         }
     } finally {
+        if ($undo) { try { M $app 'CloseUndoTransaction' | Out-Null } catch {} }
         try { S $app 'ScreenUpdating' $true } catch {}
     }
 
@@ -330,12 +507,14 @@ function Run-Batch($a) {
     if ($a.returnTasks -ne $false -and $script:Touched.Count -gt 0) {
         $fields = $DefaultTaskFields
         if ($a.returnFields) { $fields = @($a.returnFields) }
-        $proj = Cur-Proj $app
         $tasks = New-Object System.Collections.ArrayList
-        foreach ($uid in @($script:Touched.Keys)) {
-            if ($script:Deleted.ContainsKey($uid)) { continue }
-            try { [void]$tasks.Add((Read-Fields (Get-Task $proj $uid) $TaskFields $fields)) } catch {}
-        }
+        try {
+            $proj = Cur-Proj $app   # falha se o lote fechou o projeto: então não há estado a devolver
+            foreach ($uid in @($script:Touched.Keys)) {
+                if ($script:Deleted.ContainsKey($uid)) { continue }
+                try { [void]$tasks.Add((Read-Fields (Get-Task $proj $uid) $TaskFields $fields)) } catch {}
+            }
+        } catch {}
         $out['tasks'] = @($tasks)
     }
     return $out
@@ -357,6 +536,13 @@ function Run-Read($a) {
             statusDate = Fmt-Date (G $proj 'StatusDate')
             taskCount = G (G $proj 'Tasks') 'Count'; resourceCount = G (G $proj 'Resources') 'Count'
             hoursPerDay = G $proj 'HoursPerDay'; author = G $proj 'Author'
+        }
+        if ($a.projectFields) { foreach ($pf in @($a.projectFields)) { try { $out['info'][$pf] = Describe-Value (G $proj $pf) } catch { $out['info'][$pf] = $null } } }
+    }
+    foreach ($pair in @(@('views', 'Views'), @('taskTables', 'TaskTables'), @('resourceTables', 'ResourceTables'), @('taskFilters', 'TaskFilters'),
+                        @('resourceFilters', 'ResourceFilters'), @('taskGroups', 'TaskGroups'), @('resourceGroups', 'ResourceGroups'), @('calendars', 'BaseCalendars'))) {
+        if ($inc -contains $pair[0]) {
+            try { $out[$pair[0]] = @(foreach ($x in (Items (G $proj $pair[1]))) { G $x 'Name' }) } catch { $out[$pair[0]] = @() }
         }
     }
     if (($inc -contains 'tasks') -or ($inc -contains 'assignments')) {
