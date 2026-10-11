@@ -32,15 +32,32 @@ claude mcp add ms-project -- node C:\Users\user\projetos_dev\ms-project-mcp-serv
 }
 ```
 
-## Tools
-| Grupo | Tools |
+## Tools (projetadas para poucas chamadas)
+| Tool | Para quê |
 |---|---|
-| Projeto | `project_status`, `project_launch`, `project_open`, `project_new`, `project_save`, `project_info`, `baseline_save` |
-| Tarefas | `task_list`, `task_get`, `task_add`, `task_update`, `task_delete` |
-| Recursos | `resource_list`, `resource_add`, `resource_assign`, `assignment_list` |
+| `msproject_read` | Lê info, tarefas, recursos e atribuições em **uma** chamada; escolha `include`, `taskFields` e `filter` para poupar tokens. |
+| `msproject_batch` | Executa uma **lista de operações** em um único processo: `launch`, `open`, `new`, `save`, `baseline`, `add_task`, `update_task`, `delete_task`, `add_resource`, `update_resource`, `assign`. |
 
-Tarefas são identificadas por `uid` (UniqueID). Predecessoras usam o ID de linha (`"3FS+2d;5SS"`).
-Datas em ISO 8601. `MSPROJECT_TIMEOUT_MS` (padrão 60000) controla o timeout de cada chamada.
+Recursos do lote:
+- **Apelidos:** `as: "lev"` numa operação; depois `"@lev"` em `uid`, `parent`, `task`, `resource`, e `@{lev}` em `predecessors`.
+- **Hierarquia:** `parent: "@fase"` define o nível de estrutura de tópicos (sem `parent`/`outlineLevel`, a tarefa fica no nível 1).
+- **Recursos inline:** `resources: ["Ana", {resource:"Bia", units:0.5}]` atribui e cria recursos que não existem.
+- **Predecessoras:** `"3FS+2d;@{lev}SS"`. Tipos `FS/SS/FF/SF` (ou `TI/II/TT/IT`), lag em `d`, `h`, `w`, `min`; independente do idioma do Project.
+- **Erros:** para no primeiro erro (o que já rodou permanece); `continueOnError: true` segue adiante.
+- **Retorno:** resultado por operação + estado final das tarefas tocadas (`returnFields` escolhe os campos).
+
+Exemplo:
+```json
+{"ops":[
+  {"op":"new","start":"2026-11-02"},
+  {"name":"Fase 1","as":"f1"},
+  {"name":"Levantamento","parent":"@f1","durationDays":5,"resources":["Ana"],"as":"lev"},
+  {"name":"Projeto","parent":"@f1","durationDays":3,"predecessors":"@{lev}"},
+  {"name":"Entrega","milestone":true}
+]}
+```
+
+Datas em ISO 8601; durações e trabalho em horas. `MSPROJECT_TIMEOUT_MS` (padrão 180000) controla o timeout de cada chamada.
 
 ## Observações
 - As chamadas são serializadas (COM do Project é single-thread).

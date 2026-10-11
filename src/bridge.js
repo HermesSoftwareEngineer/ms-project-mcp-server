@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "bridge.ps1");
-const TIMEOUT_MS = Number(process.env.MSPROJECT_TIMEOUT_MS ?? 60000);
+const TIMEOUT_MS = Number(process.env.MSPROJECT_TIMEOUT_MS ?? 180000);
 
 let queue = Promise.resolve();
 
