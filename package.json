@@ -1,0 +1,25 @@
+{
+  "name": "ms-project-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server local para Microsoft Project (COM)",
+  "main": "src/server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HermesSoftwareEngineer/ms-project-mcp-server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/HermesSoftwareEngineer/ms-project-mcp-server/issues"
+  },
+  "homepage": "https://github.com/HermesSoftwareEngineer/ms-project-mcp-server#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.6"
+  }
+}
